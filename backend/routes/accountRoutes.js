@@ -16,6 +16,8 @@ router.post('/withdraw',  withdrawValidation, handleValidationErrors, accountCon
 router.get('/transactions', accountController.getTransactions);
 router.post('/change-pin',  accountController.changePin);
 router.post('/set-pin',     accountController.setPin);
+router.post('/generate-otp', accountController.generateOtp);
+router.post('/verify-otp',   accountController.verifyOtp);
 
 // ── Progress tracker routes ───────────────────────────────────────────────────
 router.get('/progress',   accountController.getProgress);   // GET current progress

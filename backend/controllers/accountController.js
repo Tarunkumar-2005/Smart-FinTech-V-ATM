@@ -257,14 +257,106 @@ exports.setPin = async (req, res) => {
        return res.status(400).json({ success: false, message: 'PIN is already set. Please use the Change PIN feature instead.' });
     }
 
+    if (!user.isOtpVerified) {
+       return res.status(400).json({ success: false, message: 'OTP must be verified before setting a PIN.' });
+    }
+
     user.pin = newPin;
     user.pinSet = true;
+    user.isOtpVerified = false; // Reset verification status
     await user.save();
 
     // Mark pinSet progress step
     await markProgressSteps(req.user._id, ['pinSet']);
 
     res.json({ success: true, message: 'Your PIN has been successfully set.' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message || 'Server error' });
+  }
+};
+
+// @desc    Generate OTP for first-time PIN setup
+// @route   POST /api/account/generate-otp
+// @access  Private
+exports.generateOtp = async (req, res) => {
+  try {
+    const { accountNumber } = req.body;
+
+    if (!accountNumber) {
+      return res.status(400).json({ success: false, message: 'Please provide account number.' });
+    }
+
+    const user = await User.findById(req.user._id);
+
+    if (!user || user.accountNumber !== accountNumber) {
+      return res.status(404).json({ success: false, message: 'Account not found.' });
+    }
+
+    if (user.pinSet) {
+      return res.status(400).json({ success: false, message: 'PIN is already set.' });
+    }
+
+    // Generate random 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    user.tempOtp = otp;
+    user.tempOtpExpires = new Date(Date.now() + 15000); // 15 seconds expiration
+    user.isOtpVerified = false;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'OTP Sent Successfully',
+      otp,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message || 'Server error' });
+  }
+};
+
+// @desc    Verify OTP for first-time PIN setup
+// @route   POST /api/account/verify-otp
+// @access  Private
+exports.verifyOtp = async (req, res) => {
+  try {
+    const { accountNumber, otp } = req.body;
+
+    if (!accountNumber || !otp) {
+      return res.status(400).json({ success: false, message: 'Please provide account number and OTP.' });
+    }
+
+    const user = await User.findById(req.user._id);
+
+    if (!user || user.accountNumber !== accountNumber) {
+      return res.status(404).json({ success: false, message: 'Account not found.' });
+    }
+
+    if (user.pinSet) {
+      return res.status(400).json({ success: false, message: 'PIN is already set.' });
+    }
+
+    if (!user.tempOtp || !user.tempOtpExpires) {
+      return res.status(400).json({ success: false, message: 'No OTP generated. Please generate one first.' });
+    }
+
+    if (new Date() > user.tempOtpExpires) {
+      return res.status(400).json({ success: false, message: 'OTP expired. Please resend OTP.' });
+    }
+
+    if (user.tempOtp !== otp) {
+      return res.status(400).json({ success: false, message: 'Invalid OTP. Please try again.' });
+    }
+
+    // Success: Mark verified, clear OTP
+    user.isOtpVerified = true;
+    user.tempOtp = null;
+    user.tempOtpExpires = null;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'OTP verified successfully.',
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message || 'Server error' });
   }

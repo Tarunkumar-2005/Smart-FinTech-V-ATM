@@ -61,6 +61,18 @@ const userSchema = new mongoose.Schema(
       enum: ['user', 'admin'],
       default: 'user',
     },
+    tempOtp: {
+      type: String,
+      default: null,
+    },
+    tempOtpExpires: {
+      type: Date,
+      default: null,
+    },
+    isOtpVerified: {
+      type: Boolean,
+      default: false,
+    },
 
     // ── Progress Tracker (13-step ATM learning journey) ──────────────────
     progress: {

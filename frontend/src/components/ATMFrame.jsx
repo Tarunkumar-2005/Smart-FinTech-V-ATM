@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import ATMDisplay from './ATMDisplay';
 import ATMSideButtons from './ATMSideButtons';
 import ATMKeypad from './ATMKeypad';
@@ -18,6 +19,17 @@ const ATMFrame = ({ user, isCardInserted, onCardInsert, onCardEject }) => {
   const [pinChangeStore, setPinChangeStore] = useState({ current: '', new: '' });
   const [pendingAction, setPendingAction] = useState(null);
   
+  // OTP setup state
+  const [showOtpModal, setShowOtpModal] = useState(false);
+  const [otpVal, setOtpVal] = useState('');
+  const [generatedOtp, setGeneratedOtp] = useState('');
+  const [otpTimer, setOtpTimer] = useState(15);
+  const [isOtpTimerActive, setIsOtpTimerActive] = useState(false);
+  const [otpExpired, setOtpExpired] = useState(false);
+  const [otpMessage, setOtpMessage] = useState('');
+  const [showSmsToast, setShowSmsToast] = useState(false);
+  const [smsNotification, setSmsNotification] = useState(null);
+
   const [balance, setBalance] = useState(0);
   const [transactions, setTransactions] = useState([]);
   
@@ -45,6 +57,86 @@ const ATMFrame = ({ user, isCardInserted, onCardInsert, onCardEject }) => {
     }
   }, [currentScreen]);
 
+  // OTP countdown timer
+  useEffect(() => {
+    let timer;
+    if (isOtpTimerActive && otpTimer > 0) {
+      timer = setInterval(() => {
+        setOtpTimer((prev) => prev - 1);
+      }, 1000);
+    } else if (otpTimer === 0 && isOtpTimerActive) {
+      setIsOtpTimerActive(false);
+      setOtpExpired(true);
+      setOtpMessage(language === 'HI' ? 'ओटीपी समाप्त हो गया है। कृपया नया ओटीपी भेजें।' : 'OTP expired. Please resend OTP.');
+    }
+    return () => clearInterval(timer);
+  }, [otpTimer, isOtpTimerActive, language]);
+
+  // SMS slide-in timer
+  useEffect(() => {
+    if (smsNotification) {
+      setShowSmsToast(true);
+      const t = setTimeout(() => {
+        setShowSmsToast(false);
+      }, 8000);
+      return () => clearTimeout(t);
+    }
+  }, [smsNotification]);
+
+  // OTP handlers
+  const verifyOtpCode = async () => {
+    if (otpVal.length !== 6) {
+      setOtpMessage(language === 'HI' ? 'ओटीपी 6 अंकों का होना चाहिए' : 'OTP must be 6 digits');
+      return;
+    }
+    setIsVerifying(true);
+    try {
+      setOtpMessage('');
+      await API.post('/account/verify-otp', { accountNumber: amountInput, otp: otpVal });
+      setShowOtpModal(false);
+      setShowSmsToast(false);
+      setSmsNotification(null);
+      setIsOtpTimerActive(false);
+      setCurrentScreen('CHANGE_PIN_NEW');
+      setPinInput('');
+      setMessage('');
+    } catch (err) {
+      const errorMsg = err.response?.data?.message || 'Invalid OTP. Please try again.';
+      setOtpMessage(errorMsg);
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const resendOtpCode = async () => {
+    setIsVerifying(true);
+    try {
+      setOtpMessage('');
+      const res = await API.post('/account/generate-otp', { accountNumber: amountInput });
+      setGeneratedOtp(res.data.otp);
+      setSmsNotification({ otp: res.data.otp });
+      setOtpTimer(15);
+      setIsOtpTimerActive(true);
+      setOtpExpired(false);
+      setOtpVal('');
+    } catch (err) {
+      const errorMsg = err.response?.data?.message || 'Failed to resend OTP.';
+      setOtpMessage(errorMsg);
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const closeOtpModal = () => {
+    setShowOtpModal(false);
+    setShowSmsToast(false);
+    setSmsNotification(null);
+    setIsOtpTimerActive(false);
+    setGeneratedOtp('');
+    setOtpVal('');
+    setCurrentScreen('SET_PIN_ENTER_ACC');
+  };
+
   const addTransaction = (desc, amount, type) => {
     const today = new Date().toISOString().split('T')[0];
     const newTx = { date: today, desc, amount, type };
@@ -52,6 +144,10 @@ const ATMFrame = ({ user, isCardInserted, onCardInsert, onCardEject }) => {
   };
 
   const handleKeyClick = (key) => {
+    if (showOtpModal) {
+      if (otpVal.length < 6) setOtpVal((prev) => prev + key);
+      return;
+    }
     if (['PIN', 'TRANSACTION_PIN', 'CHANGE_PIN_CURRENT', 'CHANGE_PIN_NEW', 'CHANGE_PIN_CONFIRM'].includes(currentScreen)) {
       if (pinInput.length < 4) setPinInput((prev) => prev + key);
     } else if (['WITHDRAW_AMOUNT', 'SET_PIN_ENTER_ACC'].includes(currentScreen)) {
@@ -132,7 +228,9 @@ const ATMFrame = ({ user, isCardInserted, onCardInsert, onCardEject }) => {
                 accountNumber: user.accountNumber, 
                 newPin: pinInput 
             });
-            setMessage(language === 'HI' ? 'आपका पिन सफलतापूर्वक सेट हो गया है' : 'Your PIN was successfully set.');
+            setMessage(language === 'HI' 
+                ? 'आपका पिन सफलतापूर्वक सेट कर दिया गया है।\nअब आप सभी एटीएम सुविधाओं का उपयोग कर सकते हैं।' 
+                : 'PIN has been set successfully.\nYou can now access all ATM features.');
             setPinChangeStore({ current: '', new: '' });
             setAmountInput('');
             
@@ -259,6 +357,17 @@ const ATMFrame = ({ user, isCardInserted, onCardInsert, onCardEject }) => {
     if (isVerifying) return; // Prevent clicks while verifying backend
     setMessage('');
     
+    if (showOtpModal) {
+      if (action === 'CANCEL') {
+        closeOtpModal();
+      } else if (action === 'CLEAR') {
+        setOtpVal('');
+      } else if (action === 'ENTER') {
+        verifyOtpCode();
+      }
+      return;
+    }
+
     if (action === 'CANCEL') {
       if (currentScreen === 'TRANSACTION_PIN') {
         setCurrentScreen('MENU');
@@ -331,12 +440,32 @@ const ATMFrame = ({ user, isCardInserted, onCardInsert, onCardEject }) => {
            }
         } else setMessage(language === 'HI' ? 'पिन 4 अंकों का होना चाहिए' : 'PIN must be 4 digits');
       } else if (currentScreen === 'SET_PIN_ENTER_ACC') {
-        if (amountInput === user?.accountNumber) {
-           // Basic validation, backend confirms matched account
-           setCurrentScreen('CHANGE_PIN_NEW');
-           setPinInput('');
-           setMessage('');
-        } else setMessage(language === 'HI' ? 'अमान्य खाता संख्या' : 'Invalid Account Number');
+        if (!amountInput) {
+           setMessage(language === 'HI' ? 'कृपया खाता संख्या दर्ज करें' : 'Please enter Account Number');
+           return;
+        }
+
+        const startOtpFlow = async () => {
+          setIsVerifying(true);
+          try {
+            const res = await API.post('/account/generate-otp', { accountNumber: amountInput });
+            setGeneratedOtp(res.data.otp);
+            setSmsNotification({ otp: res.data.otp });
+            setOtpTimer(15);
+            setIsOtpTimerActive(true);
+            setOtpExpired(false);
+            setOtpVal('');
+            setOtpMessage('');
+            setShowOtpModal(true);
+            setMessage('');
+          } catch (err) {
+            const errorMsg = err.response?.data?.message || 'Verification Failed. Account may not exist or PIN is already set.';
+            setMessage(errorMsg);
+          } finally {
+            setIsVerifying(false);
+          }
+        };
+        startOtpFlow();
       }
     }
   };
@@ -456,6 +585,182 @@ const ATMFrame = ({ user, isCardInserted, onCardInsert, onCardEject }) => {
                    <ATMKeypad onKeyClick={handleKeyClick} onActionClick={handleActionClick} />
                 </div>
             </div>
+
+        {/* Simulated SMS Notification Toast */}
+        <AnimatePresence>
+          {showSmsToast && smsNotification && (
+            <motion.div
+              initial={{ opacity: 0, y: -50, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -20, scale: 0.95 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 350 }}
+              className="fixed top-6 right-6 z-[9999] max-w-sm w-full bg-slate-900/95 border border-blue-500/30 shadow-[0_10px_30px_rgba(0,0,0,0.5)] rounded-2xl p-4 backdrop-blur-md flex items-start gap-4 text-left font-sans"
+            >
+              <div className="p-2.5 bg-blue-600/20 text-blue-400 rounded-xl">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-sm text-slate-200">SmartBank SMS</span>
+                  <span className="text-[10px] text-slate-400">Just now</span>
+                </div>
+                <p className="text-xs text-slate-300 mt-1 font-semibold">
+                  {language === 'HI' ? 'ओटीपी सफलतापूर्वक भेजा गया' : 'OTP Sent Successfully'}
+                </p>
+                <div className="bg-slate-950/60 p-2.5 rounded-lg border border-slate-800 mt-2 font-mono text-center text-lg tracking-wider text-yellow-300">
+                  OTP: <span className="font-bold text-xl select-all">{smsNotification.otp}</span>
+                </div>
+                <div className="text-[10px] text-slate-500 mt-2">
+                  {language === 'HI' ? '*सिम्युलेटेड मोबाइल डिलीवरी। 15 सेकंड में समाप्त।' : '*Simulated mobile delivery. Expires in 15 seconds.'}
+                </div>
+              </div>
+              <button onClick={() => setShowSmsToast(false)} className="text-slate-400 hover:text-white transition-colors">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* OTP Verification Modal */}
+        <AnimatePresence>
+          {showOtpModal && (
+            <div className="fixed inset-0 z-[9990] flex items-center justify-center p-4 font-sans">
+              {/* Backdrop */}
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={closeOtpModal}
+                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              />
+
+              {/* Modal Content */}
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                transition={{ type: 'spring', damping: 25, stiffness: 350 }}
+                className="bg-slate-900 border border-slate-700/50 rounded-2xl w-full max-w-md p-6 shadow-2xl relative z-10 overflow-hidden text-left"
+              >
+                <div className="absolute top-0 right-0 p-4">
+                  <button
+                    onClick={closeOtpModal}
+                    className="text-slate-400 hover:text-white transition-colors"
+                  >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+
+                <div className="flex flex-col items-center text-center">
+                  {/* Lock Icon */}
+                  <div className="p-3 bg-green-500/10 text-green-400 rounded-full mb-4">
+                    <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                  </div>
+
+                  <h2 className="text-xl font-bold text-slate-100">
+                    {language === 'HI' ? 'एटीएम सुरक्षा सत्यापन' : 'ATM Security Verification'}
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {language === 'HI' ? 'प्रथम बार पिन सेटअप हेतु ओटीपी आवश्यक' : 'OTP verification is required for first-time PIN setup'}
+                  </p>
+
+                  {/* Account Number Details */}
+                  <div className="w-full bg-slate-950/40 border border-slate-800 rounded-xl p-3 mt-4 text-left font-mono">
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-slate-400">{language === 'HI' ? 'खाता संख्या:' : 'Account Number:'}</span>
+                      <span className="font-bold text-slate-200 tracking-wider">
+                        {amountInput}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* OTP Input Form */}
+                  <div className="w-full mt-6 text-left">
+                    <label className="block text-sm font-semibold text-slate-300 text-left mb-2">
+                      {language === 'HI' ? '6-अंकीय ओटीपी दर्ज करें' : 'Enter 6-Digit OTP'}
+                    </label>
+                    
+                    <input
+                      type="text"
+                      maxLength={6}
+                      value={otpVal}
+                      onChange={(e) => setOtpVal(e.target.value.replace(/\D/g, ''))}
+                      placeholder="000000"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          verifyOtpCode();
+                        }
+                      }}
+                      className="w-full text-center text-3xl tracking-[0.5em] font-mono py-3 rounded-xl bg-slate-950/60 border border-slate-700/80 focus:border-green-400 focus:ring-1 focus:ring-green-400 text-green-300 outline-none transition-all shadow-inner"
+                    />
+
+                    {/* Message/Errors */}
+                    {otpMessage && (
+                      <p className="text-red-400 text-xs font-semibold mt-2.5 text-left bg-red-900/10 border border-red-900/20 px-3 py-2 rounded-lg">
+                        {otpMessage}
+                      </p>
+                    )}
+
+                    {/* Countdown Timer & Resend */}
+                    <div className="flex items-center justify-between mt-4 font-sans">
+                      <div className="flex items-center gap-2">
+                        <span className="relative flex h-2.5 w-2.5">
+                          <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${otpExpired ? 'bg-red-400' : 'bg-green-400'}`}></span>
+                          <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${otpExpired ? 'bg-red-500' : 'bg-green-500'}`}></span>
+                        </span>
+                        <span className={`text-sm font-semibold ${otpExpired ? 'text-red-400' : otpTimer <= 5 ? 'text-orange-400 animate-pulse' : 'text-slate-300'}`}>
+                          {language === 'HI' ? `शेष समय: ${otpTimer}s` : `Time Remaining: ${otpTimer}s`}
+                        </span>
+                      </div>
+
+                      <button
+                        onClick={resendOtpCode}
+                        disabled={!otpExpired && isOtpTimerActive}
+                        className={`text-xs font-bold transition-all px-3 py-1.5 rounded-lg border ${
+                          otpExpired 
+                            ? 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10 hover:bg-yellow-500/20 cursor-pointer' 
+                            : 'text-slate-500 border-slate-800 bg-slate-950/30 cursor-not-allowed'
+                        }`}
+                      >
+                        {language === 'HI' ? 'ओटीपी पुनः भेजें' : 'Resend OTP'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Footer Buttons */}
+                  <div className="grid grid-cols-2 gap-4 w-full mt-8 font-sans">
+                    <button
+                      onClick={closeOtpModal}
+                      className="py-3 px-4 rounded-xl border border-slate-700/60 bg-slate-950/20 text-slate-300 font-semibold text-sm hover:bg-slate-950/40 hover:text-white transition-all active:scale-95 animate-none"
+                    >
+                      {language === 'HI' ? 'बंद करें' : 'Close'}
+                    </button>
+                    <button
+                      onClick={verifyOtpCode}
+                      disabled={otpExpired || otpVal.length < 6}
+                      className={`py-3 px-4 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 active:scale-95 ${
+                        otpExpired || otpVal.length < 6
+                          ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/30'
+                          : 'bg-green-500 hover:bg-green-400 text-slate-950 hover:shadow-[0_0_20px_rgba(34,197,94,0.4)] cursor-pointer'
+                      }`}
+                    >
+                      {language === 'HI' ? 'सत्यापित करें' : 'Verify & Proceed'}
+                    </button>
+                  </div>
+
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
 
         </div>
       </div>
